@@ -75,9 +75,11 @@ def _check_index_exists(client: RedisType, index_name: str) -> bool:
     return True
 
 
-def _redis_key(prefix: str) -> str:
+def _redis_key(prefix: str, id: Optional[str] = None) -> str:
     """Redis key schema for a given prefix."""
-    return f"{prefix}:{uuid.uuid4().hex}"
+    if not id:
+        id = uuid.uuid4().hex
+    return f"{prefix}:{id}"
 
 
 def _redis_prefix(index_name: str) -> str:
@@ -189,6 +191,7 @@ class Redis(VectorStore):
         embeddings: Optional[List[List[float]]] = None,
         keys: Optional[List[str]] = None,
         batch_size: int = 1000,
+        ids: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> List[str]:
         """Add more texts to the vectorstore.
@@ -206,14 +209,25 @@ class Redis(VectorStore):
         Returns:
             List[str]: List of ids added to the vectorstore
         """
-        ids = []
+
+        if keys and ids:
+            raise ValueError("`ids` and `keys` cannot be provided at the same time.")
+
+        _ids = []
         prefix = _redis_prefix(self.index_name)
 
         # Write data to redis
         pipeline = self.client.pipeline(transaction=False)
         for i, text in enumerate(texts):
             # Use provided values by default or fallback
-            key = keys[i] if keys else _redis_key(prefix)
+            if keys:
+                key = keys[i]
+            else:
+                if ids:
+                    id = ids[i]
+                else:
+                    id = None
+                key = _redis_key(prefix, id=id)
             metadata = metadatas[i] if metadatas else {}
             embedding = embeddings[i] if embeddings else self.embedding_function(text)
             pipeline.hset(
@@ -224,7 +238,7 @@ class Redis(VectorStore):
                     self.metadata_key: json.dumps(metadata),
                 },
             )
-            ids.append(key)
+            _ids.append(key)
 
             # Write batch
             if i % batch_size == 0:
@@ -232,7 +246,7 @@ class Redis(VectorStore):
 
         # Cleanup final batch
         pipeline.execute()
-        return ids
+        return _ids
 
     def similarity_search(
         self, query: str, k: int = 4, **kwargs: Any
